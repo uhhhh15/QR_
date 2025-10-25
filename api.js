@@ -156,47 +156,93 @@ export function fetchQuickReplies() {
         const scriptNameMap = new Map();
         const allScripts = [];
 
+        // 1. 搜索全局脚本 (Global Scripts)
         const jsrGlobalSettings = stContext?.extensionSettings?.[JSR_DATA_KEY] || stContext?.extensionSettings?.[JSR_SETTINGS_KEY];
         if (jsrGlobalSettings?.script?.scripts) {
             const flattenedGlobal = flattenJsrScripts(jsrGlobalSettings.script.scripts);
             allScripts.push(...flattenedGlobal);
             logger.log('Found and flattened global JSR scripts:', { count: flattenedGlobal.length, summary: createScriptSummary(flattenedGlobal) });
+        } else {
+            logger.log('Global JSR scripts not found in expected location.');
         }
 
+        // 2. 搜索预设脚本 (Preset Scripts)
         const presetName = stContext.presetName;
-        if (presetName) {
+        if (presetName && stContext.presets) {
             const presetJsrSettings = stContext.presets?.[presetName]?.extensions?.[JSR_DATA_KEY] || stContext.presets?.[presetName]?.extensions?.[JSR_SETTINGS_KEY];
             if (presetJsrSettings?.scripts) {
                 const flattenedPreset = flattenJsrScripts(presetJsrSettings.scripts);
                 allScripts.push(...flattenedPreset);
                 logger.log(`Found and flattened JSR scripts from preset '${presetName}':`, { count: flattenedPreset.length, summary: createScriptSummary(flattenedPreset) });
+            } else {
+                 logger.log(`No JSR scripts found in preset '${presetName}'.`);
             }
+        } else {
+             logger.log('Preset name or presets object not available in context. Skipping preset script search.');
         }
 
+        // 3. 搜索角色脚本 (Character Scripts) - 增强版搜索
         const characterId = stContext.characterId;
-        if (characterId != null) {
-            const characterScriptsRaw = stContext.characters?.[characterId]?.data?.extensions?.[JSR_DATA_KEY] || stContext.characters?.[characterId]?.data?.extensions?.[JSR_SETTINGS_KEY];
-            logger.log(`Checking for character JSR scripts for charId ${characterId}:`, characterScriptsRaw ? 'Found' : 'Not found');
-            if (characterScriptsRaw) {
-                let characterSettingsObject = characterScriptsRaw;
-                if (Array.isArray(characterScriptsRaw)) {
-                    try {
-                        characterSettingsObject = Object.fromEntries(characterScriptsRaw);
-                    } catch (e) {
-                        logger.log('[ERROR] Failed to convert character scripts from array to object.', e);
-                        characterSettingsObject = {};
+        if (characterId != null && stContext.characters) {
+            const characterData = stContext.characters[characterId]?.data;
+            if (characterData?.extensions) {
+                let foundCharScripts = false;
+
+                // 3.1 尝试从新版标准位置获取 (JSR v4+)
+                let characterScriptsRaw = characterData.extensions[JSR_DATA_KEY] || characterData.extensions[JSR_SETTINGS_KEY];
+                logger.log(`Checking for character JSR scripts (new path) for charId ${characterId}:`, characterScriptsRaw ? 'Found' : 'Not found');
+
+                if (characterScriptsRaw) {
+                    let characterSettingsObject = characterScriptsRaw;
+                    if (Array.isArray(characterScriptsRaw)) {
+                        try { characterSettingsObject = Object.fromEntries(characterScriptsRaw); }
+                        catch (e) {
+                            logger.log('[ERROR] Failed to convert character scripts from array to object.', e);
+                            characterSettingsObject = {};
+                        }
+                    }
+
+                    if (characterSettingsObject?.scripts) {
+                        const flattenedChar = flattenJsrScripts(characterSettingsObject.scripts);
+                        allScripts.push(...flattenedChar);
+                        logger.log('Found and flattened character JSR scripts (new path):', { count: flattenedChar.length, summary: createScriptSummary(flattenedChar) });
+                        foundCharScripts = true;
                     }
                 }
 
-                if (characterSettingsObject?.scripts) {
-                    const flattenedChar = flattenJsrScripts(characterSettingsObject.scripts);
-                    allScripts.push(...flattenedChar);
-                    logger.log('Found and flattened character JSR scripts:', { count: flattenedChar.length, summary: createScriptSummary(flattenedChar) });
+                // 3.2 ★★★ 新增的修复逻辑 ★★★
+                // 作为备用，额外检查旧版 JSR 在角色卡中存储脚本的键 (JSR_CHAR_EXTENSION_KEY)
+                // 这可以捕获那些新版查找逻辑可能遗漏的脚本定义
+                const legacyCharacterScripts = characterData.extensions[JSR_CHAR_EXTENSION_KEY];
+                if (legacyCharacterScripts) {
+                     logger.log('Found character JSR scripts via legacy key (JSR_CHAR_EXTENSION_KEY). Flattening as a fallback.');
+                     const flattenedLegacyChar = flattenJsrScripts(legacyCharacterScripts);
+                     const existingIds = new Set(allScripts.map(s => s.id));
+                     flattenedLegacyChar.forEach(script => {
+                         if (!existingIds.has(script.id)) {
+                             allScripts.push(script);
+                             foundCharScripts = true;
+                         }
+                     });
+                     logger.log('Added legacy character scripts to name map pool.', { count: flattenedLegacyChar.length, summary: createScriptSummary(flattenedLegacyChar) });
                 }
+
+                if (!foundCharScripts) {
+                    logger.log(`No character-specific JSR scripts found for charId ${characterId}.`);
+                }
+
+            } else {
+                 logger.log(`Character data or extensions not available for charId ${characterId}.`);
             }
+        } else {
+            logger.log('Character ID or characters object not available in context. Skipping character script search.');
         }
 
-        allScripts.forEach(script => scriptNameMap.set(script.id, script.name));
+        allScripts.forEach(script => {
+            if (script && script.id && script.name) {
+                scriptNameMap.set(script.id, script.name);
+            }
+        });
         logger.log('Total scripts for name mapping:', Array.from(scriptNameMap.entries()));
 
         for (const script_id in enabledButtonsMap) {
@@ -204,7 +250,7 @@ export function fetchQuickReplies() {
             buttons.forEach(button => {
                 const label = button.button_name.trim();
                 if (label) {
-                    const scriptName = scriptNameMap.get(script_id) || 'JS Script';
+                    const scriptName = scriptNameMap.get(script_id) || 'JS Script'; // 备用逻辑依然保留
                     finalChatReplies.push({
                         setName: scriptName,
                         label: label,
