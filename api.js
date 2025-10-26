@@ -158,24 +158,21 @@ export function fetchQuickReplies() {
 
 		// 1. 搜索全局脚本 (Global Scripts)
 		const jsrGlobalSettings = stContext?.extensionSettings?.[JSR_DATA_KEY] || stContext?.extensionSettings?.[JSR_SETTINGS_KEY];
-		// --- 增加对新旧两种全局脚本路径的兼容性检查 ---
-		let globalScriptsSource = null;
-		if (jsrGlobalSettings?.scripts) {
-			// 检查新结构: TavernHelper.scripts
-			globalScriptsSource = jsrGlobalSettings.scripts;
-			logger.log('Found global JSR scripts in modern path (settings.scripts).');
-		} else if (jsrGlobalSettings?.script?.scripts) {
-			// 检查旧结构: TavernHelper.script.scripts
-			globalScriptsSource = jsrGlobalSettings.script.scripts;
-			logger.log('Found global JSR scripts in legacy path (settings.script.scripts).');
-		}
 
-		if (globalScriptsSource) {
-			const flattenedGlobal = flattenJsrScripts(globalScriptsSource);
+		// 同时检查 script.scripts 和 script.scriptsRepository 以提高兼容性
+		const scriptsObject = jsrGlobalSettings?.script;
+		const scriptsList = scriptsObject?.scripts || scriptsObject?.scriptsRepository;
+
+		if (scriptsList) {
+			const flattenedGlobal = flattenJsrScripts(scriptsList);
 			allScripts.push(...flattenedGlobal);
-			logger.log('Found and flattened global JSR scripts:', { count: flattenedGlobal.length, summary: createScriptSummary(flattenedGlobal) });
+			logger.log('Found and flattened global JSR scripts:', { 
+				count: flattenedGlobal.length, 
+				source: scriptsObject?.scripts ? 'scripts' : 'scriptsRepository', // 增加日志，明确来源
+				summary: createScriptSummary(flattenedGlobal) 
+			});
 		} else {
-			logger.log('Global JSR scripts not found in any expected location.');
+			logger.log('Global JSR scripts not found in expected locations (script.scripts or script.scriptsRepository).');
 		}
 
         // 2. 搜索预设脚本 (Preset Scripts)
@@ -222,7 +219,7 @@ export function fetchQuickReplies() {
                     }
                 }
 
-                // 3.2
+                // 3.2 ★★★ 新增的修复逻辑 ★★★
                 // 作为备用，额外检查旧版 JSR 在角色卡中存储脚本的键 (JSR_CHAR_EXTENSION_KEY)
                 // 这可以捕获那些新版查找逻辑可能遗漏的脚本定义
                 const legacyCharacterScripts = characterData.extensions[JSR_CHAR_EXTENSION_KEY];
